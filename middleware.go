@@ -66,9 +66,9 @@ func NewPromMiddleware(namespace string, opt PromMiddlewareOpts) *PromMiddleware
 func (pm *PromMiddleware) ServeHTTP(rw http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
 	start := time.Now()
 
-	res := negroni.NewResponseWriter(rw)
-
 	next(rw, r)
+
+	res := rw.(negroni.ResponseWriter)
 
 	go pm.request.WithLabelValues(fmt.Sprint(res.Status()), r.Method, r.URL.Path).Inc()
 	go pm.latency.WithLabelValues(fmt.Sprint(res.Status()), r.Method, r.URL.Path).Observe(float64(time.Since(start).Nanoseconds()) / 1000000)
