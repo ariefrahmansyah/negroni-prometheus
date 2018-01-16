@@ -1,6 +1,7 @@
 package negroniprometheus
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -9,53 +10,66 @@ import (
 )
 
 var (
-	dflBuckets = []float64{300, 1200, 5000}
+	dflBuckets = []float64{300, 1000, 2500, 5000}
 )
 
 const (
-	reqsName    = "negroni_requests_total"
-	latencyName = "negroni_request_duration_milliseconds"
+	requestName = "requests_total"
+	latencyName = "request_duration_milliseconds"
 )
 
-// Middleware is a handler that exposes prometheus metrics for the number of requests,
+// PromMiddlewareOpts specifies options how to create new PromMiddleware.
+type PromMiddlewareOpts struct {
+	// Buckets specifies an custom buckets to be used in request histograpm.
+	Buckets []float64
+}
+
+// PromMiddleware is a handler that exposes prometheus metrics for the number of requests,
 // the latency and the response size, partitioned by status code, method and HTTP path.
-type Middleware struct {
-	reqs    *prometheus.CounterVec
+type PromMiddleware struct {
+	request *prometheus.CounterVec
 	latency *prometheus.HistogramVec
 }
 
-// NewMiddleware returns a new prometheus Middleware handler.
-func NewMiddleware(name string, buckets ...float64) *Middleware {
-	var m Middleware
-	m.reqs = prometheus.NewCounterVec(
+// NewPromMiddleware returns a new PromMiddleware handler.
+// You can use other buckets than the default (300, 1000, 2500, 5000).
+func NewPromMiddleware(namespace string, opt PromMiddlewareOpts) *PromMiddleware {
+	var pm PromMiddleware
+
+	pm.request = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name:        reqsName,
-			Help:        "How many HTTP requests processed, partitioned by status code, method and HTTP path.",
-			ConstLabels: prometheus.Labels{"service": name},
+			Namespace: namespace,
+			Name:      requestName,
+			Help:      "How many HTTP requests processed, partitioned by status code, method and HTTP path.",
 		},
 		[]string{"code", "method", "path"},
 	)
-	prometheus.MustRegister(m.reqs)
+	prometheus.MustRegister(pm.request)
 
+	buckets := opt.Buckets
 	if len(buckets) == 0 {
 		buckets = dflBuckets
 	}
-	m.latency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        latencyName,
-		Help:        "How long it took to process the request, partitioned by status code, method and HTTP path.",
-		ConstLabels: prometheus.Labels{"service": name},
-		Buckets:     buckets,
+	pm.latency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      latencyName,
+		Help:      "How long it took to process the request, partitioned by status code, method and HTTP path.",
+		Buckets:   buckets,
 	},
 		[]string{"code", "method", "path"},
 	)
-	prometheus.MustRegister(m.latency)
-	return &m
+	prometheus.MustRegister(pm.latency)
+
+	return &pm
 }
 
-func (m *Middleware) ServeHTTP(rw http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+func (pm *PromMiddleware) ServeHTTP(rw http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
 	start := time.Now()
-	next(rw, r)
+
 	res := negroni.NewResponseWriter(rw)
-	m.reqs.WithLabelValues(http.StatusText(res.Status()), r.Method, r.URL.Path).Inc()
-	m.latency.WithLabelValues(http.StatusText(res.Status()), r.Method, r.URL.Path).Observe(float64(time.Since(start).Nanoseconds()) / 1000000)
+
+	next(rw, r)
+
+	go pm.request.WithLabelValues(fmt.Sprint(res.Status()), r.Method, r.URL.Path).Inc()
+	go pm.latency.WithLabelValues(fmt.Sprint(res.Status()), r.Method, r.URL.Path).Observe(float64(time.Since(start).Nanoseconds()) / 1000000)
 }
